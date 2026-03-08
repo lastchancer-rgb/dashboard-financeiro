@@ -576,20 +576,20 @@
   <div class="kpi-row">
     <div class="kpi-card" style="--kpi-color: var(--accent)">
       <div class="kpi-icon">↑</div>
-      <div class="kpi-label">Receitas do Mês</div>
+      <div class="kpi-label" id="kpi-receita-label">Receitas do Mês</div>
       <div class="kpi-value" id="kpi-receita">—</div>
       <div class="kpi-sub" id="kpi-receita-sub"></div>
       <div id="kpi-receita-seg" style="margin-top:8px;display:flex;flex-direction:column;gap:4px"></div>
     </div>
     <div class="kpi-card" style="--kpi-color: var(--red)">
       <div class="kpi-icon">↓</div>
-      <div class="kpi-label">Despesas do Mês</div>
+      <div class="kpi-label" id="kpi-despesa-label">Despesas do Mês</div>
       <div class="kpi-value" id="kpi-despesa">—</div>
       <div class="kpi-sub" id="kpi-despesa-sub"></div>
     </div>
     <div class="kpi-card" style="--kpi-color: var(--amber)">
       <div class="kpi-icon">◈</div>
-      <div class="kpi-label">Saldo do Mês</div>
+      <div class="kpi-label" id="kpi-saldo-label">Saldo do Mês</div>
       <div class="kpi-value" id="kpi-saldo">—</div>
       <div class="kpi-sub" id="kpi-saldo-sub"></div>
     </div>
@@ -601,19 +601,10 @@
     </div>
   </div>
 
-  <!-- TODOS ONLY: Cascata de Patrimônio -->
-  <div id="todosPatrimonioSection" style="display:none" class="card" >
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px">
-      <div>
-        <div class="card-title">Composição do Patrimônio</div>
-        <div class="card-sub" id="patrimonioWaterfallTotal">De onde veio cada real do seu patrimônio acumulado</div>
-      </div>
-      <div id="patrimonioWaterfallLegend" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center"></div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr auto;gap:24px;align-items:start">
-      <canvas id="patrimonioWaterfallChart" style="max-height:220px!important"></canvas>
-      <div id="patrimonioWaterfallCards" style="display:flex;flex-direction:column;gap:10px;min-width:220px"></div>
-    </div>
+  <!-- TODOS ONLY: Composição do Patrimônio em KPI cards -->
+  <div id="todosPatrimonioSection" style="display:none">
+    <div style="font-family:'Syne',sans-serif;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">Composição do Patrimônio</div>
+    <div id="patrimonioCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px"></div>
   </div>
 
   <!-- CHARTS -->
@@ -1200,8 +1191,12 @@ function renderKPIs() {
   const receitaTotal      = d.receita + Math.max(0, rendimentoInvest);
   const pctComprometido   = receitaTotal > 0 ? ((d.despesa / receitaTotal) * 100).toFixed(1) : 0;
 
-  // KPI Receitas
-  document.getElementById('kpi-receita').textContent = fmt(receitaTotal);
+  const isTodos = currentMes === 'TODOS';
+  document.getElementById('kpi-receita-label').textContent = isTodos ? 'Receitas Acumuladas' : 'Receitas do Mês';
+  document.getElementById('kpi-despesa-label').textContent = isTodos ? 'Despesas Acumuladas' : 'Despesas do Mês';
+  document.getElementById('kpi-saldo-label').textContent   = isTodos ? 'Saldo Acumulado'     : 'Saldo do Mês';
+
+
   document.getElementById('kpi-receita-sub').textContent = `${filtered.filter(l=>l.tipo==='Receita').length} lançamentos`;
 
   // Segmentação
@@ -1266,11 +1261,22 @@ function renderBarChart() {
     document.getElementById('fluxoTitle').textContent = 'Evolução do Patrimônio';
     document.getElementById('fluxoSub').textContent   = 'Crescimento do patrimônio total mês a mês';
 
-    // Para cada mês, calcular o patrimônio total naquele mês
     const labels = resumoMensal.map(m => m.label);
+
+    // Calcular patrimônio por mês diretamente dos ativosRaw (sem chamar getInvestimentosDoMes em loop)
     const patrimonioData = resumoMensal.map(m => {
-      const inv = getInvestimentosDoMesEspecifico(m.mes);
-      return inv.reduce((s,i) => s + i.valorAtual, 0);
+      const targetOrd = mesOrd(m.mes);
+      return ativosRaw.reduce((total, ativo) => {
+        const atualizacoes = ativo.atualizacoes.filter(a => mesOrd(a.mes) <= targetOrd);
+        const aportes      = ativo.aportes.filter(a => mesOrd(a.mes) <= targetOrd);
+        if (atualizacoes.length === 0 && aportes.length === 0) return total;
+        if (atualizacoes.length > 0) {
+          const ultimo = atualizacoes.reduce((a,b) => a.ord > b.ord ? a : b);
+          const aportesUltimoMes = aportes.filter(a => a.mes === ultimo.mes).reduce((s,a) => s+a.valor, 0);
+          return total + ultimo.valor + aportesUltimoMes;
+        }
+        return total + aportes.reduce((s,a) => s+a.valor, 0);
+      }, 0);
     });
 
     barChartInst = new Chart(ctx, {
@@ -1637,15 +1643,6 @@ function renderInvestments() {
   }
 }
 
-// Versão que aceita um mês específico como parâmetro (para o gráfico de evolução)
-function getInvestimentosDoMesEspecifico(mes) {
-  const prev = currentMes;
-  currentMes = mes;
-  const result = getInvestimentosDoMes();
-  currentMes = prev;
-  return result;
-}
-
 // ============================================================
 // TODOS — CASCATA DE PATRIMÔNIO
 // ============================================================
@@ -1657,90 +1654,34 @@ function renderTodosPatrimonio() {
   const inv = getInvestimentosDoMes();
   const total = inv.reduce((s,i) => s + i.valorAtual, 0);
 
-  // 1. Empréstimo Juan (ativo separado)
+  // 1. Empréstimo Juan
   const juan = inv.find(i => i.classe.toLowerCase().includes('emprestimo') || i.classe.toLowerCase().includes('empréstimo'));
   const valorJuan = juan ? juan.valorAtual : 0;
 
-  // 2. Rendimento de Investimentos = soma histórica de todas as receitas com categoria "Investimento" nos lançamentos
+  // 2. Rendimento = soma histórica de receitas com categoria "Investimento" nos lançamentos
   const rendimentoInvestLanc = lancamentos
     .filter(l => l.tipo === 'Receita' && l.cat === 'Investimento')
     .reduce((s,l) => s + l.valor, 0);
 
-  // 3. Capital Aplicado = o que sobra (Patrimônio Total − Juan − Rendimentos)
+  // 3. Capital Aplicado = o que sobra
   const capitalAplicado = Math.max(0, total - valorJuan - rendimentoInvestLanc);
 
   const segmentos = [
-    { label: 'Capital Aplicado',        valor: capitalAplicado,     color: '#00e676', icon: '💼' },
-    { label: 'Rendimento Investimentos', valor: rendimentoInvestLanc, color: '#ffd740', icon: '📈' },
-    { label: 'Empréstimo Juan',          valor: valorJuan,            color: '#e040fb', icon: '🤝' },
+    { label: 'Capital Aplicado',         sub: 'Dinheiro investido',         valor: capitalAplicado,      color: 'var(--accent)', icon: '↑', borderColor: 'var(--accent)' },
+    { label: 'Rendimento Investimentos',  sub: 'Juros e retornos acumulados', valor: rendimentoInvestLanc, color: 'var(--amber)',  icon: '◈', borderColor: 'var(--amber)'  },
+    { label: 'Empréstimo Juan',           sub: 'Capital a receber',           valor: valorJuan,            color: '#e040fb',       icon: '⬡', borderColor: '#e040fb'       },
+    { label: 'Patrimônio Total',          sub: `${inv.length} ativos`,        valor: total,                color: 'var(--blue)',   icon: '⬡', borderColor: 'var(--blue)', isTotal: true },
   ].filter(s => s.valor > 0);
 
-  const totalSeg = segmentos.reduce((s,g) => s + g.valor, 0);
-  const subEl = document.getElementById('patrimonioWaterfallTotal');
-  if (subEl) subEl.textContent = `Total: ${fmt(totalSeg)} · ${segmentos.length} componentes`;
-
-  // Waterfall
-  const wfLabels = ['', ...segmentos.map(s => s.label), 'Total'];
-  const bases = [0]; const barras = [0]; const cores = ['transparent'];
-  let acum = 0;
-  segmentos.forEach(s => { bases.push(acum); barras.push(s.valor); cores.push(s.color + 'cc'); acum += s.valor; });
-  bases.push(0); barras.push(acum); cores.push('rgba(64,196,255,0.5)');
-
-  const ctx = document.getElementById('patrimonioWaterfallChart').getContext('2d');
-  if (patrimonioWfInst) patrimonioWfInst.destroy();
-  patrimonioWfInst = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: wfLabels,
-      datasets: [
-        { label: '_base', data: bases, backgroundColor: 'transparent', borderColor: 'transparent', stack: 'wf' },
-        { label: 'Valor', data: barras, backgroundColor: cores, borderRadius: 6, stack: 'wf' }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: true,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          filter: item => item.datasetIndex === 1 && item.dataIndex > 0,
-          callbacks: {
-            title: items => wfLabels[items[0].dataIndex],
-            label: c => { const val = barras[c.dataIndex]; const pct = totalSeg > 0 ? ((val/totalSeg)*100).toFixed(1) : 0; return ` ${fmt(val)}  (${pct}%)`; }
-          },
-          backgroundColor: '#172118', borderColor: '#1e2e22', borderWidth: 1, titleColor: '#e8f5e9', bodyColor: '#81c784'
-        }
-      },
-      scales: {
-        x: { stacked: true, ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 } }, grid: { color: '#1e2e22' } },
-        y: { stacked: true, ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 }, callback: v => fmtShort(v) }, grid: { color: '#1e2e22' } }
-      }
-    }
-  });
-
-  // Cards laterais
-  document.getElementById('patrimonioWaterfallCards').innerHTML = segmentos.map(s => {
-    const pct = totalSeg > 0 ? ((s.valor / totalSeg)*100).toFixed(1) : 0;
-    return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <span style="font-size:15px">${s.icon}</span>
-        <span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">${s.label}</span>
-      </div>
-      <div style="font-size:17px;font-weight:700;color:${s.color};font-family:'Syne',sans-serif;margin-bottom:6px">${fmt(s.valor)}</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <div style="flex:1;height:4px;background:var(--border);border-radius:2px">
-          <div style="width:${pct}%;height:100%;background:${s.color};border-radius:2px"></div>
-        </div>
-        <span style="font-size:11px;color:var(--text3)">${pct}%</span>
-      </div>
+  document.getElementById('patrimonioCards').innerHTML = segmentos.map(s => {
+    const pct = total > 0 && !s.isTotal ? ((s.valor / total) * 100).toFixed(1) : null;
+    return `<div class="kpi-card" style="--kpi-color:${s.borderColor}">
+      <div class="kpi-icon">${s.icon}</div>
+      <div class="kpi-label">${s.label}</div>
+      <div class="kpi-value" style="color:${s.color}">${fmt(s.valor)}</div>
+      <div class="kpi-sub">${pct !== null ? pct + '% do patrimônio' : s.sub}</div>
     </div>`;
   }).join('');
-
-  // Legend
-  document.getElementById('patrimonioWaterfallLegend').innerHTML = segmentos.map(s =>
-    `<div style="display:flex;align-items:center;gap:6px">
-      <div style="width:8px;height:8px;border-radius:2px;background:${s.color}"></div>
-      <span style="font-size:10px;color:var(--text3)">${s.label}</span>
-    </div>`).join('');
 }
 
 function render() {
