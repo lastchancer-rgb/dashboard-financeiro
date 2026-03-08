@@ -601,11 +601,34 @@
     </div>
   </div>
 
+  <!-- TODOS ONLY: Cascata de Patrimônio -->
+  <div id="todosPatrimonioSection" style="display:none" class="card" >
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+      <div>
+        <div class="card-title">Composição do Patrimônio</div>
+        <div class="card-sub" id="patrimonioWaterfallTotal">De onde veio cada real do seu patrimônio acumulado</div>
+      </div>
+      <div id="patrimonioWaterfallLegend" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:24px;align-items:start">
+      <canvas id="patrimonioWaterfallChart" style="max-height:220px!important"></canvas>
+      <div id="patrimonioWaterfallCards" style="display:flex;flex-direction:column;gap:10px;min-width:220px"></div>
+    </div>
+  </div>
+
   <!-- CHARTS -->
   <div class="charts-row">
     <div class="card">
-      <div class="card-title">Fluxo Mensal</div>
-      <div class="card-sub">Receitas vs Despesas vs Saldo por mês</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
+        <div>
+          <div class="card-title" id="fluxoTitle">Fluxo Mensal</div>
+          <div class="card-sub" id="fluxoSub">Receitas vs Despesas vs Saldo por mês</div>
+        </div>
+        <div id="fluxoToggle" style="display:none;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px;display:flex;gap:2px">
+          <button id="btnPatrimonio" onclick="setFluxoView('patrimonio')" style="font-family:'DM Mono',monospace;font-size:10px;padding:5px 12px;border:none;border-radius:16px;cursor:pointer;background:var(--accent);color:#0a0f0d;font-weight:600">Patrimônio</button>
+          <button id="btnFluxo" onclick="setFluxoView('fluxo')" style="font-family:'DM Mono',monospace;font-size:10px;padding:5px 12px;border:none;border-radius:16px;cursor:pointer;background:transparent;color:var(--text3)">Receitas/Despesas</button>
+        </div>
+      </div>
       <canvas id="barChart"></canvas>
     </div>
     <div class="card">
@@ -961,11 +984,12 @@ function buildResumoMensal(lancamentos) {
 // ============================================================
 let lancamentos = [];
 let resumoMensal = [];
-let investimentos = [];   // sempre o mais recente (usado em "Todos")
-let ativosRaw = [];       // histórico completo para filtrar por mês
+let investimentos = [];
+let ativosRaw = [];
 let historicoAportes = [];
 let currentMes = 'TODOS';
-let barChartInst = null, doughnutInst = null, catChartInst = null;
+let fluxoView = 'patrimonio'; // 'patrimonio' | 'fluxo'
+let barChartInst = null, doughnutInst = null, catChartInst = null, patrimonioWfInst = null;
 
 const fmt = v => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtShort = v => v >= 1000 ? 'R$ ' + (v/1000).toFixed(1).replace('.', ',') + 'k' : fmt(v);
@@ -1211,11 +1235,79 @@ function renderKPIs() {
 }
 
 // ============================================================
+// FLUXO TOGGLE
+// ============================================================
+function setFluxoView(view) {
+  fluxoView = view;
+  const btnP = document.getElementById('btnPatrimonio');
+  const btnF = document.getElementById('btnFluxo');
+  if (btnP && btnF) {
+    btnP.style.background = view === 'patrimonio' ? 'var(--accent)' : 'transparent';
+    btnP.style.color      = view === 'patrimonio' ? '#0a0f0d' : 'var(--text3)';
+    btnF.style.background = view === 'fluxo' ? 'var(--accent)' : 'transparent';
+    btnF.style.color      = view === 'fluxo' ? '#0a0f0d' : 'var(--text3)';
+  }
+  renderBarChart();
+}
+
+// ============================================================
 // BAR CHART
 // ============================================================
 function renderBarChart() {
   const ctx = document.getElementById('barChart').getContext('2d');
   if (barChartInst) barChartInst.destroy();
+
+  const isTodos = currentMes === 'TODOS';
+  const toggle  = document.getElementById('fluxoToggle');
+  if (toggle) toggle.style.display = isTodos ? 'flex' : 'none';
+
+  // Patrimônio view: linha de evolução do patrimônio mês a mês
+  if (isTodos && fluxoView === 'patrimonio') {
+    document.getElementById('fluxoTitle').textContent = 'Evolução do Patrimônio';
+    document.getElementById('fluxoSub').textContent   = 'Crescimento do patrimônio total mês a mês';
+
+    // Para cada mês, calcular o patrimônio total naquele mês
+    const labels = resumoMensal.map(m => m.label);
+    const patrimonioData = resumoMensal.map(m => {
+      const inv = getInvestimentosDoMesEspecifico(m.mes);
+      return inv.reduce((s,i) => s + i.valorAtual, 0);
+    });
+
+    barChartInst = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Patrimônio Total',
+          data: patrimonioData,
+          borderColor: '#40c4ff',
+          backgroundColor: 'rgba(64,196,255,0.08)',
+          fill: true,
+          tension: 0.4,
+          pointBackgroundColor: '#40c4ff',
+          pointRadius: 6,
+          pointHoverRadius: 8,
+          borderWidth: 2.5,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: true,
+        plugins: {
+          legend: { labels: { color: '#81c784', font: { family: 'DM Mono', size: 11 }, boxWidth: 10 } },
+          tooltip: { callbacks: { label: c => ' ' + fmt(c.parsed.y) }, backgroundColor: '#172118', borderColor: '#1e2e22', borderWidth: 1, titleColor: '#e8f5e9', bodyColor: '#81c784' }
+        },
+        scales: {
+          x: { ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 } }, grid: { color: '#1e2e22' } },
+          y: { ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 }, callback: v => fmtShort(v) }, grid: { color: '#1e2e22' } }
+        }
+      }
+    });
+    return;
+  }
+
+  // Fluxo view (default mensal)
+  document.getElementById('fluxoTitle').textContent = 'Fluxo Mensal';
+  document.getElementById('fluxoSub').textContent   = 'Receitas vs Despesas vs Saldo por mês';
   barChartInst = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -1545,10 +1637,116 @@ function renderInvestments() {
   }
 }
 
+// Versão que aceita um mês específico como parâmetro (para o gráfico de evolução)
+function getInvestimentosDoMesEspecifico(mes) {
+  const prev = currentMes;
+  currentMes = mes;
+  const result = getInvestimentosDoMes();
+  currentMes = prev;
+  return result;
+}
+
+// ============================================================
+// TODOS — CASCATA DE PATRIMÔNIO
+// ============================================================
+function renderTodosPatrimonio() {
+  const section = document.getElementById('todosPatrimonioSection');
+  if (currentMes !== 'TODOS') { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+
+  const inv = getInvestimentosDoMes();
+  const total = inv.reduce((s,i) => s + i.valorAtual, 0);
+
+  // 1. Empréstimo Juan (ativo separado)
+  const juan = inv.find(i => i.classe.toLowerCase().includes('emprestimo') || i.classe.toLowerCase().includes('empréstimo'));
+  const valorJuan = juan ? juan.valorAtual : 0;
+
+  // 2. Rendimento de Investimentos = soma histórica de todas as receitas com categoria "Investimento" nos lançamentos
+  const rendimentoInvestLanc = lancamentos
+    .filter(l => l.tipo === 'Receita' && l.cat === 'Investimento')
+    .reduce((s,l) => s + l.valor, 0);
+
+  // 3. Capital Aplicado = o que sobra (Patrimônio Total − Juan − Rendimentos)
+  const capitalAplicado = Math.max(0, total - valorJuan - rendimentoInvestLanc);
+
+  const segmentos = [
+    { label: 'Capital Aplicado',        valor: capitalAplicado,     color: '#00e676', icon: '💼' },
+    { label: 'Rendimento Investimentos', valor: rendimentoInvestLanc, color: '#ffd740', icon: '📈' },
+    { label: 'Empréstimo Juan',          valor: valorJuan,            color: '#e040fb', icon: '🤝' },
+  ].filter(s => s.valor > 0);
+
+  const totalSeg = segmentos.reduce((s,g) => s + g.valor, 0);
+  const subEl = document.getElementById('patrimonioWaterfallTotal');
+  if (subEl) subEl.textContent = `Total: ${fmt(totalSeg)} · ${segmentos.length} componentes`;
+
+  // Waterfall
+  const wfLabels = ['', ...segmentos.map(s => s.label), 'Total'];
+  const bases = [0]; const barras = [0]; const cores = ['transparent'];
+  let acum = 0;
+  segmentos.forEach(s => { bases.push(acum); barras.push(s.valor); cores.push(s.color + 'cc'); acum += s.valor; });
+  bases.push(0); barras.push(acum); cores.push('rgba(64,196,255,0.5)');
+
+  const ctx = document.getElementById('patrimonioWaterfallChart').getContext('2d');
+  if (patrimonioWfInst) patrimonioWfInst.destroy();
+  patrimonioWfInst = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: wfLabels,
+      datasets: [
+        { label: '_base', data: bases, backgroundColor: 'transparent', borderColor: 'transparent', stack: 'wf' },
+        { label: 'Valor', data: barras, backgroundColor: cores, borderRadius: 6, stack: 'wf' }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          filter: item => item.datasetIndex === 1 && item.dataIndex > 0,
+          callbacks: {
+            title: items => wfLabels[items[0].dataIndex],
+            label: c => { const val = barras[c.dataIndex]; const pct = totalSeg > 0 ? ((val/totalSeg)*100).toFixed(1) : 0; return ` ${fmt(val)}  (${pct}%)`; }
+          },
+          backgroundColor: '#172118', borderColor: '#1e2e22', borderWidth: 1, titleColor: '#e8f5e9', bodyColor: '#81c784'
+        }
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 } }, grid: { color: '#1e2e22' } },
+        y: { stacked: true, ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 }, callback: v => fmtShort(v) }, grid: { color: '#1e2e22' } }
+      }
+    }
+  });
+
+  // Cards laterais
+  document.getElementById('patrimonioWaterfallCards').innerHTML = segmentos.map(s => {
+    const pct = totalSeg > 0 ? ((s.valor / totalSeg)*100).toFixed(1) : 0;
+    return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:15px">${s.icon}</span>
+        <span style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">${s.label}</span>
+      </div>
+      <div style="font-size:17px;font-weight:700;color:${s.color};font-family:'Syne',sans-serif;margin-bottom:6px">${fmt(s.valor)}</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="flex:1;height:4px;background:var(--border);border-radius:2px">
+          <div style="width:${pct}%;height:100%;background:${s.color};border-radius:2px"></div>
+        </div>
+        <span style="font-size:11px;color:var(--text3)">${pct}%</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Legend
+  document.getElementById('patrimonioWaterfallLegend').innerHTML = segmentos.map(s =>
+    `<div style="display:flex;align-items:center;gap:6px">
+      <div style="width:8px;height:8px;border-radius:2px;background:${s.color}"></div>
+      <span style="font-size:10px;color:var(--text3)">${s.label}</span>
+    </div>`).join('');
+}
 
 function render() {
   buildMonthSelector();
   renderKPIs();
+  renderTodosPatrimonio();
   renderBarChart();
   renderDoughnut();
   renderCatChart();
