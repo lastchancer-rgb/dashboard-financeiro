@@ -1196,8 +1196,8 @@ function renderKPIs() {
   document.getElementById('kpi-despesa-label').textContent = isTodos ? 'Despesas Acumuladas' : 'Despesas do Mês';
   document.getElementById('kpi-saldo-label').textContent   = isTodos ? 'Saldo Acumulado'     : 'Saldo do Mês';
 
-
-  document.getElementById('kpi-receita-sub').textContent = `${filtered.filter(l=>l.tipo==='Receita').length} lançamentos`;
+  // KPI Receitas
+  document.getElementById('kpi-receita').textContent = fmt(receitaTotal);
 
   // Segmentação
   const segEl = document.getElementById('kpi-receita-seg');
