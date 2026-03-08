@@ -873,41 +873,51 @@ function parseInvestimentos(rows) {
   // rendimento = valorAtual − valorAnterior − aportesDoMesAtual
   const investimentos = Object.values(ativos).map(ativo => {
     const atualizacoes = ativo.atualizacoes.sort((a,b) => a.ord - b.ord);
-    if (!atualizacoes.length) return null;
+    const aportes      = ativo.aportes.sort((a,b) => a.ord - b.ord);
+    const totalAportado = aportes.reduce((s,a) => s + a.valor, 0);
 
-    const ultimo    = atualizacoes[atualizacoes.length - 1];
-    const anterior  = atualizacoes.length > 1 ? atualizacoes[atualizacoes.length - 2] : null;
-
-    // Aportes do mês mais recente
-    const aportesUltimoMes = ativo.aportes
-      .filter(a => a.mes === ultimo.mes)
-      .reduce((s, a) => s + a.valor, 0);
-
-    // Total aportado (soma de todos os aportes históricos)
-    const totalAportado = ativo.aportes.reduce((s, a) => s + a.valor, 0);
-
-    // Rendimento do mês = crescimento − aportes novos
-    const rendimentoMes = anterior
-      ? (ultimo.valor - anterior.valor - aportesUltimoMes)
-      : 0;
-
-    // Rendimento total = valor atual − total aportado
-    // Se não há aportes registrados, usa 0 como base para não mostrar dado errado
-    const rendimentoTotal = totalAportado > 0 ? (ultimo.valor - totalAportado) : 0;
-
-    return {
-      classe:         ativo.classe,
-      banco:          ativo.banco,
-      icon:           inferir(ativo.classe, iconPorClasse, '💰'),
-      tipo:           inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
-      valorAtual:     ultimo.valor,
-      valorAnterior:  anterior ? anterior.valor : null,
-      aportesTotal:   totalAportado || ultimo.valor,
-      aportesUltimoMes,
-      rendimentoMes,
-      rendimentoTotal,
-      mesAtual:       ultimo.mes,
-    };
+    if (atualizacoes.length > 0) {
+      const ultimo   = atualizacoes[atualizacoes.length - 1];
+      const anterior = atualizacoes.length > 1 ? atualizacoes[atualizacoes.length - 2] : null;
+      // Aportes do mesmo mês da última atualização somam ao valor atual
+      const aportesUltimoMes = aportes.filter(a => a.mes === ultimo.mes).reduce((s,a) => s+a.valor, 0);
+      const valorAtualComAporte = ultimo.valor + aportesUltimoMes;
+      // Valor anterior também inclui aportes do mês anterior
+      const aportesAnteriorMes = anterior ? aportes.filter(a => a.mes === anterior.mes).reduce((s,a) => s+a.valor, 0) : 0;
+      const valorAnteriorComAporte = anterior ? (anterior.valor + aportesAnteriorMes) : null;
+      const rendimentoMes   = anterior ? (valorAtualComAporte - valorAnteriorComAporte - aportesUltimoMes) : 0;
+      const rendimentoTotal = totalAportado > 0 ? (valorAtualComAporte - totalAportado) : 0;
+      return {
+        classe:          ativo.classe,
+        banco:           ativo.banco,
+        icon:            inferir(ativo.classe, iconPorClasse, '💰'),
+        tipo:            inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
+        valorAtual:      valorAtualComAporte,
+        valorAnterior:   valorAnteriorComAporte,
+        aportesTotal:    totalAportado,
+        aportesUltimoMes,
+        rendimentoMes,
+        rendimentoTotal,
+        mesAtual:        ultimo.mes,
+      };
+    } else if (aportes.length > 0) {
+      // Só tem aportes — valor atual = soma dos aportes
+      const ultimoAporte = aportes[aportes.length - 1];
+      return {
+        classe:          ativo.classe,
+        banco:           ativo.banco,
+        icon:            inferir(ativo.classe, iconPorClasse, '💰'),
+        tipo:            inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
+        valorAtual:      totalAportado,
+        valorAnterior:   null,
+        aportesTotal:    totalAportado,
+        aportesUltimoMes: totalAportado,
+        rendimentoMes:   0,
+        rendimentoTotal: 0,
+        mesAtual:        ultimoAporte.mes,
+      };
+    }
+    return null;
   }).filter(Boolean);
 
   // Histórico de aportes agrupado por mês
@@ -991,37 +1001,56 @@ function getInvestimentosDoMes() {
   }
 
   return ativosRaw.map(ativo => {
-    // Pega atualizações até o mês selecionado
     const atualizacoesFiltradas = ativo.atualizacoes
       .filter(a => mesOrd(a.mes) <= targetOrd)
       .sort((a,b) => a.ord - b.ord);
+    const aportesFiltrados = ativo.aportes
+      .filter(a => mesOrd(a.mes) <= targetOrd)
+      .sort((a,b) => a.ord - b.ord);
 
-    if (!atualizacoesFiltradas.length) return null;
+    const totalAportado = aportesFiltrados.reduce((s,a) => s+a.valor, 0);
 
-    const ultimo   = atualizacoesFiltradas[atualizacoesFiltradas.length - 1];
-    const anterior = atualizacoesFiltradas.length > 1 ? atualizacoesFiltradas[atualizacoesFiltradas.length - 2] : null;
+    if (atualizacoesFiltradas.length > 0) {
+      const ultimo   = atualizacoesFiltradas[atualizacoesFiltradas.length - 1];
+      const anterior = atualizacoesFiltradas.length > 1 ? atualizacoesFiltradas[atualizacoesFiltradas.length - 2] : null;
 
-    // Aportes até o mês selecionado
-    const aportesFiltrados = ativo.aportes.filter(a => mesOrd(a.mes) <= targetOrd);
-    const aportesUltimoMes = aportesFiltrados.filter(a => a.mes === ultimo.mes).reduce((s,a) => s+a.valor, 0);
-    const totalAportado    = aportesFiltrados.reduce((s,a) => s+a.valor, 0);
+      const aportesUltimoMes       = aportesFiltrados.filter(a => a.mes === ultimo.mes).reduce((s,a) => s+a.valor, 0);
+      const valorAtualComAporte    = ultimo.valor + aportesUltimoMes;
+      const aportesAnteriorMes     = anterior ? aportesFiltrados.filter(a => a.mes === anterior.mes).reduce((s,a) => s+a.valor, 0) : 0;
+      const valorAnteriorComAporte = anterior ? (anterior.valor + aportesAnteriorMes) : null;
+      const rendimentoMes          = anterior ? (valorAtualComAporte - valorAnteriorComAporte - aportesUltimoMes) : 0;
+      const rendimentoTotal        = totalAportado > 0 ? (valorAtualComAporte - totalAportado) : 0;
 
-    const rendimentoMes   = anterior ? (ultimo.valor - anterior.valor - aportesUltimoMes) : 0;
-    const rendimentoTotal = totalAportado > 0 ? (ultimo.valor - totalAportado) : 0;
-
-    return {
-      classe:          ativo.classe,
-      banco:           ativo.banco,
-      icon:            inferir(ativo.classe, iconPorClasse, '💰'),
-      tipo:            inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
-      valorAtual:      ultimo.valor,
-      valorAnterior:   anterior ? anterior.valor : null,
-      aportesTotal:    totalAportado || ultimo.valor,
-      aportesUltimoMes,
-      rendimentoMes,
-      rendimentoTotal,
-      mesAtual:        ultimo.mes,
-    };
+      return {
+        classe:          ativo.classe,
+        banco:           ativo.banco,
+        icon:            inferir(ativo.classe, iconPorClasse, '💰'),
+        tipo:            inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
+        valorAtual:      valorAtualComAporte,
+        valorAnterior:   valorAnteriorComAporte,
+        aportesTotal:    totalAportado,
+        aportesUltimoMes,
+        rendimentoMes,
+        rendimentoTotal,
+        mesAtual:        ultimo.mes,
+      };
+    } else if (aportesFiltrados.length > 0) {
+      const ultimoAporte = aportesFiltrados[aportesFiltrados.length - 1];
+      return {
+        classe:          ativo.classe,
+        banco:           ativo.banco,
+        icon:            inferir(ativo.classe, iconPorClasse, '💰'),
+        tipo:            inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
+        valorAtual:      totalAportado,
+        valorAnterior:   null,
+        aportesTotal:    totalAportado,
+        aportesUltimoMes: totalAportado,
+        rendimentoMes:   0,
+        rendimentoTotal: 0,
+        mesAtual:        ultimoAporte.mes,
+      };
+    }
+    return null;
   }).filter(Boolean);
 }
 
@@ -1344,25 +1373,39 @@ function renderInvestments() {
     </div>`;
 
   // KPIs invest
-  const nubank = investimentos.filter(i => i.banco === 'Nubank');
-  const itau   = investimentos.filter(i => i.banco === 'Itaú');
-  const totalNu = nubank.reduce((s,i) => s + i.valorAtual, 0);
-  const totalIt = itau.reduce((s,i) => s + i.valorAtual, 0);
+  // Aporte do mês = soma dos aportes do mês mais recente nos dados
+  const mesAtualInvest = currentMes !== 'TODOS' ? currentMes : (invDoMes[0]?.mesAtual || null);
+  const aporteDoMes = mesAtualInvest
+    ? ativosRaw.reduce((s, ativo) => s + ativo.aportes.filter(a => a.mes === mesAtualInvest).reduce((ss,a) => ss+a.valor, 0), 0)
+    : 0;
+  const receitaDoMes = currentMes !== 'TODOS'
+    ? (resumoMensal.find(m => m.mes === currentMes)?.receita || 0)
+    : resumoMensal.reduce((s,m) => s + m.receita, 0);
+  const aportePctReceita = receitaDoMes > 0 ? ((aporteDoMes / receitaDoMes) * 100).toFixed(1) : 0;
+
+  // Rendimento do mês = soma de (atualização mais recente - atualização anterior - aportes do mês ANTERIOR)
+  // Ou seja: crescimento puro, sem contar o que foi aportado no mês corrente
+  const rendimentoMesCorrigido = invDoMes.reduce((s, i) => {
+    if (i.valorAnterior === null) return s;
+    const rendPuro = i.valorAtual - i.aportesUltimoMes - i.valorAnterior;
+    return s + rendPuro;
+  }, 0);
+
   document.getElementById('investKpiRow').innerHTML = `
     <div class="invest-kpi" style="--ik-color:var(--accent)">
       <div class="invest-kpi-label">Patrimônio Total</div>
       <div class="invest-kpi-val">${fmt(total)}</div>
-      <div class="invest-kpi-sub">${investimentos.length} ativos</div>
+      <div class="invest-kpi-sub">${invDoMes.length} ativos</div>
     </div>
-    <div class="invest-kpi" style="--ik-color:var(--accent)">
-      <div class="invest-kpi-label">Total Aportado</div>
-      <div class="invest-kpi-val">${fmt(totalAportes)}</div>
-      <div class="invest-kpi-sub">Capital investido</div>
+    <div class="invest-kpi" style="--ik-color:var(--blue)">
+      <div class="invest-kpi-label">Aporte do Mês</div>
+      <div class="invest-kpi-val">${fmt(aporteDoMes)}</div>
+      <div class="invest-kpi-sub">${aportePctReceita}% da receita${mesAtualInvest ? ' · ' + mesAtualInvest : ''}</div>
     </div>
-    <div class="invest-kpi" style="--ik-color:${rendimentoMes>=0?'var(--accent)':'var(--red)'}">
+    <div class="invest-kpi" style="--ik-color:${rendimentoMesCorrigido>=0?'var(--accent)':'var(--red)'}">
       <div class="invest-kpi-label">Rendimento do Mês</div>
-      <div class="invest-kpi-val">${rendimentoMes>=0?'+':''}${fmt(rendimentoMes)}</div>
-      <div class="invest-kpi-sub">vs. mês anterior</div>
+      <div class="invest-kpi-val">${rendimentoMesCorrigido>=0?'+':''}${fmt(rendimentoMesCorrigido)}</div>
+      <div class="invest-kpi-sub">juros puros s/ aportes</div>
     </div>
     <div class="invest-kpi" style="--ik-color:var(--amber)">
       <div class="invest-kpi-label">Distribuição</div>
