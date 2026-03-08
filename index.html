@@ -624,7 +624,20 @@
     </div>
   </div>
 
-  <!-- CATEGORY BREAKDOWN (monthly view) -->
+  <!-- TODOS ONLY: Receita vs Despesa acumulada + Waterfall -->
+  <div id="todosSection" style="display:none;display:grid;grid-template-columns:1.4fr 1fr;gap:20px">
+    <div class="card">
+      <div class="card-title">Receita vs Despesa Acumulada</div>
+      <div class="card-sub">Crescimento ao longo do ano</div>
+      <canvas id="areaChart"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-title">Waterfall de Saldo</div>
+      <div class="card-sub">Contribuição de cada mês para o acúmulo anual</div>
+      <canvas id="waterfallChart"></canvas>
+    </div>
+  </div>
+
   <div class="cat-section card" id="catBreakdown" style="display:none">
     <div class="cat-section-header">
       <div>
@@ -1547,14 +1560,152 @@ function renderInvestments() {
 }
 
 // ============================================================
-// RENDER ALL
+// TODOS-ONLY CHARTS
 // ============================================================
+let areaChartInst = null;
+let waterfallChartInst = null;
+
+function renderTodosCharts() {
+  const section = document.getElementById('todosSection');
+  if (currentMes !== 'TODOS') {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'grid';
+
+  const labels = resumoMensal.map(m => m.label);
+
+  // ---- Receita vs Despesa Acumulada (área) ----
+  let accReceita = 0, accDespesa = 0;
+  const accRec = resumoMensal.map(m => { accReceita += m.receita; return accReceita; });
+  const accDesp = resumoMensal.map(m => { accDespesa += m.despesa; return accDespesa; });
+  const accSaldo = accRec.map((r, i) => r - accDesp[i]);
+
+  const ctxArea = document.getElementById('areaChart').getContext('2d');
+  if (areaChartInst) areaChartInst.destroy();
+  areaChartInst = new Chart(ctxArea, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Receita Acum.',
+          data: accRec,
+          borderColor: '#00e676',
+          backgroundColor: 'rgba(0,230,118,0.08)',
+          fill: true,
+          tension: 0.4,
+          pointBackgroundColor: '#00e676',
+          pointRadius: 4,
+        },
+        {
+          label: 'Despesa Acum.',
+          data: accDesp,
+          borderColor: '#ff5252',
+          backgroundColor: 'rgba(255,82,82,0.06)',
+          fill: true,
+          tension: 0.4,
+          pointBackgroundColor: '#ff5252',
+          pointRadius: 4,
+        },
+        {
+          label: 'Saldo Acum.',
+          data: accSaldo,
+          borderColor: '#ffd740',
+          backgroundColor: 'rgba(255,215,64,0.0)',
+          fill: false,
+          tension: 0.4,
+          pointBackgroundColor: '#ffd740',
+          pointRadius: 4,
+          borderDash: [4, 3],
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: {
+        legend: { labels: { color: '#81c784', font: { family: 'DM Mono', size: 11 }, boxWidth: 10 } },
+        tooltip: { callbacks: { label: c => ' ' + fmt(c.parsed.y) }, backgroundColor: '#172118', borderColor: '#1e2e22', borderWidth: 1, titleColor: '#e8f5e9', bodyColor: '#81c784' }
+      },
+      scales: {
+        x: { ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 } }, grid: { color: '#1e2e22' } },
+        y: { ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 }, callback: v => fmtShort(v) }, grid: { color: '#1e2e22' } }
+      }
+    }
+  });
+
+  // ---- Waterfall de Saldo ----
+  // Cada barra começa no acumulado anterior e sobe/desce pelo saldo do mês
+  const ctxWf = document.getElementById('waterfallChart').getContext('2d');
+  if (waterfallChartInst) waterfallChartInst.destroy();
+
+  // bases invisíveis + barras coloridas
+  const bases = [];
+  const barras = [];
+  const cores = [];
+  let acum = 0;
+  resumoMensal.forEach(m => {
+    bases.push(m.saldo >= 0 ? acum : acum + m.saldo);
+    barras.push(Math.abs(m.saldo));
+    cores.push(m.saldo >= 0 ? 'rgba(0,230,118,0.75)' : 'rgba(255,82,82,0.75)');
+    acum += m.saldo;
+  });
+
+  waterfallChartInst = new Chart(ctxWf, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '_base',
+          data: bases,
+          backgroundColor: 'transparent',
+          borderColor: 'transparent',
+          stack: 'wf',
+        },
+        {
+          label: 'Saldo do Mês',
+          data: barras,
+          backgroundColor: cores,
+          borderRadius: 5,
+          stack: 'wf',
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (c) => {
+              if (c.datasetIndex === 0) return null;
+              const mes = resumoMensal[c.dataIndex];
+              return ` ${mes.saldo >= 0 ? '+' : ''}${fmt(mes.saldo)}`;
+            },
+            title: (items) => resumoMensal[items[0].dataIndex]?.label || ''
+          },
+          filter: item => item.datasetIndex === 1,
+          backgroundColor: '#172118', borderColor: '#1e2e22', borderWidth: 1,
+          titleColor: '#e8f5e9', bodyColor: '#81c784'
+        }
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 } }, grid: { color: '#1e2e22' } },
+        y: { stacked: true, ticks: { color: '#4a6e50', font: { family: 'DM Mono', size: 11 }, callback: v => fmtShort(v) }, grid: { color: '#1e2e22' } }
+      }
+    }
+  });
+}
+
+
 function render() {
   buildMonthSelector();
   renderKPIs();
   renderBarChart();
   renderDoughnut();
   renderCatChart();
+  renderTodosCharts();
   renderCatBreakdown();
   renderTransactions();
   renderInvestments();
