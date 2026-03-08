@@ -802,31 +802,28 @@ function parseLancamentos(rows) {
 }
 
 function parseInvestimentos(rows) {
-  // Pula cabeçalhos até achar linha com "Data" na col 0
   let dataStart = -1;
-  for (let i = 0; i < rows.length; i++) {
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
     if (rows[i][0] && rows[i][0].toLowerCase().includes('data')) { dataStart = i + 1; break; }
+  }
+  if (dataStart < 0) {
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][0] && rows[i][0].match(/^\d{2}\/\d{2}\/\d{4}$/)) { dataStart = i; break; }
+    }
   }
   if (dataStart < 0) return { investimentos: [], historicoAportes: [] };
 
-  // Mapeamento de classe → banco (inferido do nome ou col banco)
-  const bancoPorClasse = {
-    'renda fixa': 'Nubank', 'nu reserva': 'Nubank', 'arx': 'Nubank',
-    'bolsa': 'Nubank', 'caixinha': 'Nubank', 'presente': 'Nubank',
-    'cripto': 'Nubank',
-    'cofrinho': 'Itaú', 'tesouro': 'Itaú', 'privilege': 'Itaú',
-    'itau index': 'Itaú', 'itaú index': 'Itaú',
-  };
   const iconPorClasse = {
-    'renda fixa':'🏦','nu reserva':'💧','arx':'📊','bolsa':'📈',
-    'caixinha':'⚡','present':'🎁','emergência':'🛡️','cripto':'₿',
-    'cofrinho':'🐷','tesouro':'🏛️','privilege':'💎','itau index':'📉','itaú index':'📉',
+    'emprestimo':'💸','renda fixa':'🏦','nu reserva':'💧','arx':'📊','bolsa':'📈',
+    'caixinha':'⚡','present':'🎁','emergência':'🛡️','emergencia':'🛡️','cripto':'₿',
+    'cofrinho':'🐷','tesouro':'🏛️','privilege':'💎','itau index':'📉','itaú index':'📉','index':'📉',
   };
   const tipoPorClasse = {
-    'renda fixa':'Renda Fixa','nu reserva':'Renda Fixa','arx':'Fundo',
-    'bolsa':'Renda Variável','caixinha':'Renda Fixa','present':'Reserva',
-    'emergência':'Reserva','cripto':'Renda Variável','cofrinho':'Renda Fixa',
-    'tesouro':'Renda Fixa','privilege':'Renda Fixa','itau index':'Renda Variável','itaú index':'Renda Variável',
+    'emprestimo':'Renda Fixa','renda fixa':'Renda Fixa','nu reserva':'Renda Fixa',
+    'arx':'Fundo','bolsa':'Renda Variável','caixinha':'Renda Fixa',
+    'present':'Reserva','emergência':'Reserva','emergencia':'Reserva',
+    'cripto':'Renda Variável','cofrinho':'Renda Fixa','tesouro':'Renda Fixa',
+    'privilege':'Renda Fixa','index':'Renda Variável',
   };
 
   function inferir(campo, mapa, def) {
@@ -837,9 +834,29 @@ function parseInvestimentos(rows) {
     return def;
   }
 
-  // Separa "Atualização" (valor atual) e "Aporte" por classe+banco
-  const atualizacoes = {}; // key = classe|banco
-  const aportesPorChave = {}; // key = classe|banco, value = { itens[] }
+  // Normaliza banco: aceita Itau, Itaú, ITAU, itau etc.
+  function normalizeBank(s) {
+    if (!s) return 'Nubank';
+    const n = s.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (n.includes('itau')) return 'Itaú';
+    if (n.includes('nu') || n.includes('nubank')) return 'Nubank';
+    return s.trim();
+  }
+
+  // Normaliza status: aceita string com encoding quebrado
+  function isAtualizacao(s) {
+    if (!s) return false;
+    const n = s.toLowerCase();
+    return n.includes('atualiz') || n.includes('atual');
+  }
+  function isAporte(s) {
+    if (!s) return false;
+    const n = s.toLowerCase();
+    return n.includes('aporte');
+  }
+
+  const atualizacoes = {};
+  const aportesPorChave = {};
 
   for (let i = dataStart; i < rows.length; i++) {
     const r = rows[i];
@@ -850,16 +867,14 @@ function parseInvestimentos(rows) {
     const valor = parseBRL(valorRaw);
     if (!valor) continue;
 
-    const bancoReal = banco && banco.trim() ? banco.trim() : inferir(classe, bancoPorClasse, 'Nubank');
+    const bancoReal = normalizeBank(banco);
     const key = `${classe.trim()}|${bancoReal}`;
-    const s = status.trim().toLowerCase();
 
-    if (s === 'atualização' || s === 'atualizacao' || s.includes('atual')) {
-      // Mantém o mais recente
-      if (!atualizacoes[key] || r[0] > atualizacoes[key].data) {
+    if (isAtualizacao(status)) {
+      if (!atualizacoes[key] || data > atualizacoes[key].data) {
         atualizacoes[key] = { data, classe: classe.trim(), banco: bancoReal, valorAtual: valor };
       }
-    } else if (s === 'aporte' || s.includes('aporte')) {
+    } else if (isAporte(status)) {
       if (!aportesPorChave[key]) aportesPorChave[key] = [];
       aportesPorChave[key].push({ data, classe: classe.trim(), banco: bancoReal, valor });
     }
@@ -879,7 +894,6 @@ function parseInvestimentos(rows) {
     };
   });
 
-  // Histórico aportes agrupado por mês
   const historicoMap = {};
   Object.values(aportesPorChave).flat().forEach(a => {
     const parts = a.data.split('/');
@@ -955,16 +969,24 @@ function showError(msg) {
 async function loadData() {
   showLoading();
   try {
-    const [csvLanc, csvInvest] = await Promise.all([
-      fetch(sheetUrl(GID_LANCAMENTOS)).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status} ao buscar Lançamentos`); return r.text(); }),
-      fetch(sheetUrl(GID_INVESTIMENTOS)).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status} ao buscar Investimentos`); return r.text(); }),
+    const [respLanc, respInvest] = await Promise.all([
+      fetch(sheetUrl(GID_LANCAMENTOS)),
+      fetch(sheetUrl(GID_INVESTIMENTOS)),
     ]);
+    if (!respLanc.ok) throw new Error(`HTTP ${respLanc.status} ao buscar Lançamentos`);
+    if (!respInvest.ok) throw new Error(`HTTP ${respInvest.status} ao buscar Investimentos`);
 
-    // Debug: loga as primeiras linhas no console do navegador
-    console.log('=== CSV Lançamentos (primeiras 5 linhas) ===');
-    console.log(csvLanc.split('\n').slice(0, 5).join('\n'));
-    console.log('=== CSV Investimentos (primeiras 5 linhas) ===');
-    console.log(csvInvest.split('\n').slice(0, 5).join('\n'));
+    // Força decodificação UTF-8 correta
+    const decoder = new TextDecoder('utf-8');
+    const [bufLanc, bufInvest] = await Promise.all([
+      respLanc.arrayBuffer(),
+      respInvest.arrayBuffer(),
+    ]);
+    const csvLanc   = decoder.decode(bufLanc);
+    const csvInvest = decoder.decode(bufInvest);
+
+    console.log('=== CSV Lançamentos (5 linhas) ===', csvLanc.split('\n').slice(0,5).join('\n'));
+    console.log('=== CSV Investimentos (5 linhas) ===', csvInvest.split('\n').slice(0,5).join('\n'));
 
     lancamentos = parseLancamentos(parseCSV(csvLanc));
     const inv = parseInvestimentos(parseCSV(csvInvest));
@@ -979,7 +1001,7 @@ async function loadData() {
     render();
   } catch (e) {
     console.error('Erro loadData:', e);
-    showError(e.message + '<br><br>Abra o Console do navegador (F12 → Console) para ver detalhes e mande um print para diagnóstico.');
+    showError(e.message + '<br><br>Abra o Console (F12) para detalhes.');
   }
 }
 
