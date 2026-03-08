@@ -816,7 +816,7 @@ function parseInvestimentos(rows) {
   const iconPorClasse = {
     'emprestimo':'💸','renda fixa':'🏦','nu reserva':'💧','arx':'📊','bolsa':'📈',
     'caixinha':'⚡','present':'🎁','emergência':'🛡️','emergencia':'🛡️','cripto':'₿',
-    'cofrinho':'🐷','tesouro':'🏛️','privilege':'💎','itau index':'📉','itaú index':'📉','index':'📉',
+    'cofrinho':'🐷','tesouro':'🏛️','privilege':'💎','index':'📉',
   };
   const tipoPorClasse = {
     'emprestimo':'Renda Fixa','renda fixa':'Renda Fixa','nu reserva':'Renda Fixa',
@@ -825,43 +825,33 @@ function parseInvestimentos(rows) {
     'cripto':'Renda Variável','cofrinho':'Renda Fixa','tesouro':'Renda Fixa',
     'privilege':'Renda Fixa','index':'Renda Variável',
   };
-
   function inferir(campo, mapa, def) {
-    const k = campo.toLowerCase();
-    for (const [key, val] of Object.entries(mapa)) {
-      if (k.includes(key)) return val;
-    }
+    const k = (campo||'').toLowerCase();
+    for (const [key, val] of Object.entries(mapa)) { if (k.includes(key)) return val; }
     return def;
   }
-
-  // Normaliza banco: aceita Itau, Itaú, ITAU, itau etc.
   function normalizeBank(s) {
     if (!s) return 'Nubank';
-    const n = s.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const n = s.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
     if (n.includes('itau')) return 'Itaú';
     if (n.includes('nu') || n.includes('nubank')) return 'Nubank';
     return s.trim();
   }
-
-  // Normaliza status: aceita string com encoding quebrado
-  function isAtualizacao(s) {
-    if (!s) return false;
-    const n = s.toLowerCase();
-    return n.includes('atualiz') || n.includes('atual');
-  }
-  function isAporte(s) {
-    if (!s) return false;
-    const n = s.toLowerCase();
-    return n.includes('aporte');
+  function isAtualizacao(s) { return s && s.toLowerCase().includes('atualiz'); }
+  function isAporte(s)      { return s && s.toLowerCase().includes('aporte'); }
+  function dateParts(d) {    // dd/mm/yyyy → {y,m,d,ord}
+    const [dd,mm,yyyy] = d.split('/').map(Number);
+    return { y: yyyy, m: mm, d: dd, ord: yyyy*10000 + mm*100 + dd };
   }
 
-  const atualizacoes = {};
-  const aportesPorChave = {};
+  // Agrupa todas as linhas por ativo (classe|banco)
+  // Cada ativo tem: histórico de atualizações [{data, valor, ord}] e aportes [{data, valor, mes}]
+  const ativos = {}; // key → { classe, banco, atualizacoes[], aportes[] }
 
   for (let i = dataStart; i < rows.length; i++) {
     const r = rows[i];
-    const data   = r[0]; const classe = r[1]; const valorRaw = r[2];
-    const banco  = r[3]; const status = r[4];
+    const data = r[0]; const classe = r[1]; const valorRaw = r[2];
+    const banco = r[3]; const status = r[4];
     if (!data || !classe || !status) continue;
     if (!data.match(/\d{2}\/\d{2}\/\d{4}/)) continue;
     const valor = parseBRL(valorRaw);
@@ -869,45 +859,72 @@ function parseInvestimentos(rows) {
 
     const bancoReal = normalizeBank(banco);
     const key = `${classe.trim()}|${bancoReal}`;
+    if (!ativos[key]) ativos[key] = { classe: classe.trim(), banco: bancoReal, atualizacoes: [], aportes: [] };
 
+    const dp = dateParts(data);
     if (isAtualizacao(status)) {
-      if (!atualizacoes[key] || data > atualizacoes[key].data) {
-        atualizacoes[key] = { data, classe: classe.trim(), banco: bancoReal, valorAtual: valor };
-      }
+      ativos[key].atualizacoes.push({ data, valor, ord: dp.ord, mes: `${dp.m}/${dp.y}` });
     } else if (isAporte(status)) {
-      if (!aportesPorChave[key]) aportesPorChave[key] = [];
-      aportesPorChave[key].push({ data, classe: classe.trim(), banco: bancoReal, valor });
+      ativos[key].aportes.push({ data, valor, ord: dp.ord, mes: `${dp.m}/${dp.y}` });
     }
   }
 
-  const investimentos = Object.values(atualizacoes).map(inv => {
-    const key = `${inv.classe}|${inv.banco}`;
-    const aps = aportesPorChave[key] || [];
-    const aportesTotal = aps.reduce((s, a) => s + a.valor, 0) || inv.valorAtual;
-    return {
-      classe:       inv.classe,
-      banco:        inv.banco,
-      icon:         inferir(inv.classe, iconPorClasse, '💰'),
-      tipo:         inferir(inv.classe, tipoPorClasse, 'Renda Fixa'),
-      valorAtual:   inv.valorAtual,
-      aportesTotal,
-    };
-  });
+  // Para cada ativo, ordena histórico e calcula rendimento do último mês
+  // rendimento = valorAtual − valorAnterior − aportesDoMesAtual
+  const investimentos = Object.values(ativos).map(ativo => {
+    const atualizacoes = ativo.atualizacoes.sort((a,b) => a.ord - b.ord);
+    if (!atualizacoes.length) return null;
 
+    const ultimo    = atualizacoes[atualizacoes.length - 1];
+    const anterior  = atualizacoes.length > 1 ? atualizacoes[atualizacoes.length - 2] : null;
+
+    // Aportes do mês mais recente
+    const aportesUltimoMes = ativo.aportes
+      .filter(a => a.mes === ultimo.mes)
+      .reduce((s, a) => s + a.valor, 0);
+
+    // Total aportado (soma de todos os aportes históricos)
+    const totalAportado = ativo.aportes.reduce((s, a) => s + a.valor, 0);
+
+    // Rendimento do mês = crescimento − aportes novos
+    const rendimentoMes = anterior
+      ? (ultimo.valor - anterior.valor - aportesUltimoMes)
+      : 0;
+
+    // Rendimento total = valor atual − total aportado
+    // Se não há aportes registrados, usa 0 como base para não mostrar dado errado
+    const rendimentoTotal = totalAportado > 0 ? (ultimo.valor - totalAportado) : 0;
+
+    return {
+      classe:         ativo.classe,
+      banco:          ativo.banco,
+      icon:           inferir(ativo.classe, iconPorClasse, '💰'),
+      tipo:           inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
+      valorAtual:     ultimo.valor,
+      valorAnterior:  anterior ? anterior.valor : null,
+      aportesTotal:   totalAportado || ultimo.valor,
+      aportesUltimoMes,
+      rendimentoMes,
+      rendimentoTotal,
+      mesAtual:       ultimo.mes,
+    };
+  }).filter(Boolean);
+
+  // Histórico de aportes agrupado por mês
   const historicoMap = {};
-  Object.values(aportesPorChave).flat().forEach(a => {
-    const parts = a.data.split('/');
-    const mes = `${parseInt(parts[1])}/${parts[2]}`;
-    if (!historicoMap[mes]) historicoMap[mes] = { mes, data: a.data, itens: [] };
-    historicoMap[mes].itens.push({ classe: a.classe, banco: a.banco, valor: a.valor });
+  Object.values(ativos).forEach(ativo => {
+    ativo.aportes.forEach(a => {
+      if (!historicoMap[a.mes]) historicoMap[a.mes] = { mes: a.mes, data: a.data, itens: [] };
+      historicoMap[a.mes].itens.push({ classe: ativo.classe, banco: ativo.banco, valor: a.valor });
+    });
   });
-  const historicoAportes = Object.values(historicoMap).sort((a, b) => {
-    const [am, ay] = a.mes.split('/').map(Number);
-    const [bm, by] = b.mes.split('/').map(Number);
+  const historicoAportes = Object.values(historicoMap).sort((a,b) => {
+    const [am,ay] = a.mes.split('/').map(Number);
+    const [bm,by] = b.mes.split('/').map(Number);
     return ay !== by ? ay - by : am - bm;
   });
 
-  return { investimentos, historicoAportes };
+  return { investimentos, historicoAportes, ativos: Object.values(ativos) };
 }
 
 function buildResumoMensal(lancamentos) {
@@ -934,13 +951,79 @@ function buildResumoMensal(lancamentos) {
 // ============================================================
 let lancamentos = [];
 let resumoMensal = [];
-let investimentos = [];
+let investimentos = [];   // sempre o mais recente (usado em "Todos")
+let ativosRaw = [];       // histórico completo para filtrar por mês
 let historicoAportes = [];
 let currentMes = 'TODOS';
 let barChartInst = null, doughnutInst = null, catChartInst = null;
 
 const fmt = v => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtShort = v => v >= 1000 ? 'R$ ' + (v/1000).toFixed(1).replace('.', ',') + 'k' : fmt(v);
+
+// Converte "m/yyyy" para número ordinal para comparação
+function mesOrd(mes) {
+  const [m, y] = mes.split('/').map(Number);
+  return y * 100 + m;
+}
+
+// Retorna os investimentos calculados para o mês filtrado
+function getInvestimentosDoMes() {
+  if (currentMes === 'TODOS' || !ativosRaw.length) return investimentos;
+
+  const targetOrd = mesOrd(currentMes);
+
+  const iconPorClasse = {
+    'emprestimo':'💸','renda fixa':'🏦','nu reserva':'💧','arx':'📊','bolsa':'📈',
+    'caixinha':'⚡','present':'🎁','emergência':'🛡️','emergencia':'🛡️','cripto':'₿',
+    'cofrinho':'🐷','tesouro':'🏛️','privilege':'💎','index':'📉',
+  };
+  const tipoPorClasse = {
+    'emprestimo':'Renda Fixa','renda fixa':'Renda Fixa','nu reserva':'Renda Fixa',
+    'arx':'Fundo','bolsa':'Renda Variável','caixinha':'Renda Fixa',
+    'present':'Reserva','emergência':'Reserva','emergencia':'Reserva',
+    'cripto':'Renda Variável','cofrinho':'Renda Fixa','tesouro':'Renda Fixa',
+    'privilege':'Renda Fixa','index':'Renda Variável',
+  };
+  function inferir(campo, mapa, def) {
+    const k = (campo||'').toLowerCase();
+    for (const [key, val] of Object.entries(mapa)) { if (k.includes(key)) return val; }
+    return def;
+  }
+
+  return ativosRaw.map(ativo => {
+    // Pega atualizações até o mês selecionado
+    const atualizacoesFiltradas = ativo.atualizacoes
+      .filter(a => mesOrd(a.mes) <= targetOrd)
+      .sort((a,b) => a.ord - b.ord);
+
+    if (!atualizacoesFiltradas.length) return null;
+
+    const ultimo   = atualizacoesFiltradas[atualizacoesFiltradas.length - 1];
+    const anterior = atualizacoesFiltradas.length > 1 ? atualizacoesFiltradas[atualizacoesFiltradas.length - 2] : null;
+
+    // Aportes até o mês selecionado
+    const aportesFiltrados = ativo.aportes.filter(a => mesOrd(a.mes) <= targetOrd);
+    const aportesUltimoMes = aportesFiltrados.filter(a => a.mes === ultimo.mes).reduce((s,a) => s+a.valor, 0);
+    const totalAportado    = aportesFiltrados.reduce((s,a) => s+a.valor, 0);
+
+    const rendimentoMes   = anterior ? (ultimo.valor - anterior.valor - aportesUltimoMes) : 0;
+    const rendimentoTotal = totalAportado > 0 ? (ultimo.valor - totalAportado) : 0;
+
+    return {
+      classe:          ativo.classe,
+      banco:           ativo.banco,
+      icon:            inferir(ativo.classe, iconPorClasse, '💰'),
+      tipo:            inferir(ativo.classe, tipoPorClasse, 'Renda Fixa'),
+      valorAtual:      ultimo.valor,
+      valorAnterior:   anterior ? anterior.valor : null,
+      aportesTotal:    totalAportado || ultimo.valor,
+      aportesUltimoMes,
+      rendimentoMes,
+      rendimentoTotal,
+      mesAtual:        ultimo.mes,
+    };
+  }).filter(Boolean);
+}
 
 // ============================================================
 // LOADING STATE
@@ -990,7 +1073,8 @@ async function loadData() {
 
     lancamentos = parseLancamentos(parseCSV(csvLanc));
     const inv = parseInvestimentos(parseCSV(csvInvest));
-    investimentos = inv.investimentos;
+    investimentos    = inv.investimentos;
+    ativosRaw        = inv.ativos;
     historicoAportes = inv.historicoAportes;
     resumoMensal = buildResumoMensal(lancamentos);
 
@@ -1047,7 +1131,8 @@ function getMesData() {
 function renderKPIs() {
   const d = getMesData();
   const pct = d.receita > 0 ? ((d.despesa / d.receita) * 100).toFixed(1) : 0;
-  const totalInvest = investimentos.reduce((s, i) => s + i.valorAtual, 0);
+  const invDoMes = getInvestimentosDoMes();
+  const totalInvest = invDoMes.reduce((s, i) => s + i.valorAtual, 0);
   document.getElementById('kpi-receita').textContent = fmt(d.receita);
   document.getElementById('kpi-receita-sub').textContent = `${getFiltered().filter(l=>l.tipo==='Receita').length} lançamentos`;
   document.getElementById('kpi-despesa').textContent = fmt(d.despesa);
@@ -1226,14 +1311,16 @@ function diasParaProximoAporte() {
 }
 
 function renderInvestments() {
-  const total = investimentos.reduce((s, i) => s + i.valorAtual, 0);
-  const totalAportes = investimentos.reduce((s, i) => s + i.aportesTotal, 0);
-  const totalRendimento = total - totalAportes;
-  const rendPct = totalAportes > 0 ? ((totalRendimento / totalAportes) * 100).toFixed(1) : 0;
+  const invDoMes = getInvestimentosDoMes();
+  const total          = invDoMes.reduce((s, i) => s + i.valorAtual, 0);
+  const totalAportes   = invDoMes.reduce((s, i) => s + i.aportesTotal, 0);
+  const rendimentoMes  = invDoMes.reduce((s, i) => s + i.rendimentoMes, 0);
+  const rendimentoTotal= invDoMes.reduce((s, i) => s + i.rendimentoTotal, 0);
+  const rendPct        = totalAportes > 0 ? ((rendimentoTotal / totalAportes) * 100).toFixed(1) : 0;
 
   // Sidebar resumo
   document.getElementById('investTotal').textContent = fmt(total);
-  const sorted = [...investimentos].sort((a,b) => b.valorAtual - a.valorAtual).slice(0, 8);
+  const sorted = [...invDoMes].sort((a,b) => b.valorAtual - a.valorAtual).slice(0, 8);
   const maxV = sorted[0]?.valorAtual || 1;
   const sideColors = ['#00e676','#69f0ae','#40c4ff','#ffd740','#ff6e40','#e040fb','#b9f6ca','#ff5252'];
   document.getElementById('investGrid').innerHTML = sorted.map((inv, i) => `
@@ -1272,52 +1359,59 @@ function renderInvestments() {
       <div class="invest-kpi-val">${fmt(totalAportes)}</div>
       <div class="invest-kpi-sub">Capital investido</div>
     </div>
-    <div class="invest-kpi" style="--ik-color:${totalRendimento>=0?'var(--accent)':'var(--red)'}">
-      <div class="invest-kpi-label">Rendimento Total</div>
-      <div class="invest-kpi-val">${totalRendimento>=0?'+':''}${fmt(totalRendimento)}</div>
-      <div class="invest-kpi-sub">${rendPct}% sobre aportes</div>
+    <div class="invest-kpi" style="--ik-color:${rendimentoMes>=0?'var(--accent)':'var(--red)'}">
+      <div class="invest-kpi-label">Rendimento do Mês</div>
+      <div class="invest-kpi-val">${rendimentoMes>=0?'+':''}${fmt(rendimentoMes)}</div>
+      <div class="invest-kpi-sub">vs. mês anterior</div>
     </div>
     <div class="invest-kpi" style="--ik-color:var(--amber)">
       <div class="invest-kpi-label">Distribuição</div>
       <div class="invest-kpi-val" style="font-size:14px">
-        <span style="color:#820ad1">Nu</span> ${total>0?(totalNu/total*100).toFixed(0):0}%
-        <span style="color:#f08000;margin-left:6px">Itaú</span> ${total>0?(totalIt/total*100).toFixed(0):0}%
+        <span style="color:#820ad1">Nu</span> ${total>0?(invDoMes.filter(i=>i.banco==='Nubank').reduce((s,i)=>s+i.valorAtual,0)/total*100).toFixed(0):0}%
+        <span style="color:#f08000;margin-left:6px">Itaú</span> ${total>0?(invDoMes.filter(i=>i.banco==='Itaú').reduce((s,i)=>s+i.valorAtual,0)/total*100).toFixed(0):0}%
       </div>
-      <div class="invest-kpi-sub">${fmt(totalNu)} / ${fmt(totalIt)}</div>
+      <div class="invest-kpi-sub">${fmt(invDoMes.filter(i=>i.banco==='Nubank').reduce((s,i)=>s+i.valorAtual,0))} / ${fmt(invDoMes.filter(i=>i.banco==='Itaú').reduce((s,i)=>s+i.valorAtual,0))}</div>
     </div>`;
 
   // Por tipo
   const tipoMap = {};
-  investimentos.forEach(i => {
-    if (!tipoMap[i.tipo]) tipoMap[i.tipo] = { atual: 0, aportes: 0, count: 0 };
-    tipoMap[i.tipo].atual += i.valorAtual; tipoMap[i.tipo].aportes += i.aportesTotal; tipoMap[i.tipo].count++;
+  invDoMes.forEach(i => {
+    if (!tipoMap[i.tipo]) tipoMap[i.tipo] = { atual: 0, aportes: 0, count: 0, rendMes: 0 };
+    tipoMap[i.tipo].atual   += i.valorAtual;
+    tipoMap[i.tipo].aportes += i.aportesTotal;
+    tipoMap[i.tipo].count++;
+    tipoMap[i.tipo].rendMes += i.rendimentoMes;
   });
   document.getElementById('investTipoRow').innerHTML = Object.entries(tipoMap).map(([tipo, d]) => {
     const meta = tipoCores[tipo] || { color: '#69f0ae' };
-    const rend = d.atual - d.aportes;
     const pct  = total > 0 ? ((d.atual / total) * 100).toFixed(1) : 0;
     return `<div class="tipo-card" style="--tipo-color:${meta.color}">
       <div class="tipo-card-label">${tipo}</div>
       <div class="tipo-card-val">${fmt(d.atual)}</div>
       <div class="tipo-card-pct">${pct}% do portfólio · ${d.count} ativo${d.count>1?'s':''}</div>
-      <div class="tipo-card-juros" style="color:${rend>=0?'var(--accent)':'var(--red)'}">
-        ${rend>=0?'▲':'▼'} ${fmt(Math.abs(rend))} rendimento
+      <div class="tipo-card-juros" style="color:${d.rendMes>=0?'var(--accent)':'var(--red)'}">
+        ${d.rendMes>=0?'▲':'▼'} ${fmt(Math.abs(d.rendMes))} no mês
       </div></div>`;
   }).join('');
 
   // Por banco
   document.getElementById('investBanksRow').innerHTML = '';
   ['Nubank', 'Itaú'].forEach(banco => {
-    const items  = investimentos.filter(i => i.banco === banco).sort((a,b) => b.valorAtual - a.valorAtual);
+    const items = invDoMes.filter(i => i.banco === banco).sort((a,b) => b.valorAtual - a.valorAtual);
     if (!items.length) return;
-    const totVal = items.reduce((s,i) => s + i.valorAtual, 0);
-    const totAp  = items.reduce((s,i) => s + i.aportesTotal, 0);
-    const rend   = totVal - totAp;
-    const rendP  = totAp > 0 ? ((rend / totAp) * 100).toFixed(2) : 0;
-    const cor    = bancoCores[banco] || '#69f0ae';
+    const totVal    = items.reduce((s,i) => s + i.valorAtual, 0);
+    const rendMesTotal = items.reduce((s,i) => s + i.rendimentoMes, 0);
+    const rendPct   = totVal > 0 ? ((rendMesTotal / (totVal - rendMesTotal)) * 100).toFixed(2) : '0.00';
+    const cor       = bancoCores[banco] || '#69f0ae';
     const itemsHtml = items.map(inv => {
-      const j  = inv.valorAtual - inv.aportesTotal;
       const tp = tipoCores[inv.tipo] || { color: '#69f0ae' };
+      const rMes   = inv.rendimentoMes;
+      const rTotal = inv.rendimentoTotal;
+      const rMesPct = inv.valorAnterior && inv.valorAnterior > 0
+        ? ((rMes / inv.valorAnterior) * 100).toFixed(2) : null;
+      const rTotalPct = inv.aportesTotal > 0
+        ? ((rTotal / inv.aportesTotal) * 100).toFixed(1) : null;
+
       return `<div class="bank-item">
         <div class="bank-item-icon">${inv.icon}</div>
         <div class="bank-item-info">
@@ -1326,8 +1420,13 @@ function renderInvestments() {
         </div>
         <div class="bank-item-vals">
           <div class="bank-item-atual">${fmt(inv.valorAtual)}</div>
-          <div class="bank-item-juros" style="color:${j>=0?'var(--accent)':'var(--red)'}">
-            ${j>=0?'+':''}${fmt(j)} (${inv.aportesTotal>0?((j/inv.aportesTotal)*100).toFixed(1):0}%)
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:1px">
+            ${inv.valorAnterior !== null ? `
+            <div class="bank-item-juros" style="color:${rMes>=0?'var(--accent)':'var(--red)'}">
+              ${rMes>=0?'▲':'▼'} ${fmt(Math.abs(rMes))} no mês${rMesPct!==null?' ('+rMesPct+'%)':''}
+            </div>` : '<div class="bank-item-juros" style="color:var(--text3)">primeiro registro</div>'}
+            ${rTotalPct !== null && inv.aportes > 0 ? `
+            <div style="font-size:9px;color:var(--text3)">${rTotal>=0?'+':''}${fmt(rTotal)} total (${rTotalPct}%)</div>` : ''}
           </div>
         </div></div>`;
     }).join('');
@@ -1337,12 +1436,12 @@ function renderInvestments() {
           <div class="bank-logo" style="background:${cor}22">${banco==='Nubank'?'🟣':'🟠'}</div>
           <div><div class="bank-name" style="color:${cor}">${banco}</div><div style="font-size:10px;color:var(--text3)">${items.length} ativos</div></div>
           <div class="bank-total" style="color:${cor}">${fmt(totVal)}</div>
-          <span class="bank-rendimento-tag ${rend<0?'neg':''}">${rend>=0?'+':''}${rendP}%</span>
+          <span class="bank-rendimento-tag ${rendMesTotal<0?'neg':''}">${rendMesTotal>=0?'+':''}${rendPct}%</span>
         </div>
         <div class="bank-items">${itemsHtml}</div>
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:11px">
-          <span style="color:var(--text3)">Rendimento total</span>
-          <span style="color:${rend>=0?'var(--accent)':'var(--red)'};font-family:'Syne',sans-serif;font-weight:700">${rend>=0?'+':''}${fmt(rend)}</span>
+          <span style="color:var(--text3)">Rendimento no mês</span>
+          <span style="color:${rendMesTotal>=0?'var(--accent)':'var(--red)'};font-family:'Syne',sans-serif;font-weight:700">${rendMesTotal>=0?'+':''}${fmt(rendMesTotal)}</span>
         </div>
       </div>`;
   });
