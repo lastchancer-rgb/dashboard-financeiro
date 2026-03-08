@@ -579,6 +579,7 @@
       <div class="kpi-label">Receitas do Mês</div>
       <div class="kpi-value" id="kpi-receita">—</div>
       <div class="kpi-sub" id="kpi-receita-sub"></div>
+      <div id="kpi-receita-seg" style="margin-top:8px;display:flex;flex-direction:column;gap:4px"></div>
     </div>
     <div class="kpi-card" style="--kpi-color: var(--red)">
       <div class="kpi-icon">↓</div>
@@ -1159,19 +1160,55 @@ function getMesData() {
 // ============================================================
 function renderKPIs() {
   const d = getMesData();
-  const pct = d.receita > 0 ? ((d.despesa / d.receita) * 100).toFixed(1) : 0;
+  const filtered = getFiltered();
   const invDoMes = getInvestimentosDoMes();
   const totalInvest = invDoMes.reduce((s, i) => s + i.valorAtual, 0);
-  document.getElementById('kpi-receita').textContent = fmt(d.receita);
-  document.getElementById('kpi-receita-sub').textContent = `${getFiltered().filter(l=>l.tipo==='Receita').length} lançamentos`;
+
+  // Rendimento do mês dos investimentos (juros puros)
+  const rendimentoInvest = invDoMes.reduce((s, i) => {
+    if (i.valorAnterior === null) return s;
+    return s + (i.valorAtual - i.aportesUltimoMes - i.valorAnterior);
+  }, 0);
+
+  // Segmentação de receitas
+  const receitaSalario    = filtered.filter(l => l.tipo === 'Receita' && l.cat === 'Salário').reduce((s,l) => s+l.valor, 0);
+  const receitaInvestLanc = filtered.filter(l => l.tipo === 'Receita' && l.cat === 'Investimento').reduce((s,l) => s+l.valor, 0);
+  const receitaInvest     = receitaInvestLanc + Math.max(0, rendimentoInvest);
+  const receitaTotal      = d.receita + Math.max(0, rendimentoInvest);
+  const pctComprometido   = receitaTotal > 0 ? ((d.despesa / receitaTotal) * 100).toFixed(1) : 0;
+
+  // KPI Receitas
+  document.getElementById('kpi-receita').textContent = fmt(receitaTotal);
+  document.getElementById('kpi-receita-sub').textContent = `${filtered.filter(l=>l.tipo==='Receita').length} lançamentos`;
+
+  // Segmentação
+  const segEl = document.getElementById('kpi-receita-seg');
+  const pctSal = receitaTotal > 0 ? ((receitaSalario / receitaTotal)*100).toFixed(0) : 0;
+  const pctInv = receitaTotal > 0 ? ((receitaInvest  / receitaTotal)*100).toFixed(0) : 0;
+  segEl.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:10px;color:var(--text3)">💼 Salário</span>
+      <span style="font-size:10px;color:var(--text2)">${fmt(receitaSalario)} <span style="color:var(--text3)">(${pctSal}%)</span></span>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:10px;color:var(--text3)">📈 Investimento</span>
+      <span style="font-size:10px;color:var(--accent)">${fmt(receitaInvest)} <span style="color:var(--text3)">(${pctInv}%)</span></span>
+    </div>`;
+
+  // KPI Despesas
   document.getElementById('kpi-despesa').textContent = fmt(d.despesa);
-  document.getElementById('kpi-despesa-sub').textContent = `${getFiltered().filter(l=>l.tipo==='Despesa').length} lançamentos`;
+  document.getElementById('kpi-despesa-sub').textContent = `${filtered.filter(l=>l.tipo==='Despesa').length} lançamentos`;
+
+  // KPI Saldo (considera rendimento)
+  const saldoReal = receitaTotal - d.despesa;
   const saldoEl = document.getElementById('kpi-saldo');
-  saldoEl.textContent = fmt(d.saldo);
-  saldoEl.style.color = d.saldo >= 0 ? 'var(--amber)' : 'var(--red)';
-  document.getElementById('kpi-saldo-sub').textContent = `${pct}% comprometido`;
+  saldoEl.textContent = fmt(saldoReal);
+  saldoEl.style.color = saldoReal >= 0 ? 'var(--amber)' : 'var(--red)';
+  document.getElementById('kpi-saldo-sub').textContent = `${pctComprometido}% comprometido`;
+
+  // KPI Patrimônio
   document.getElementById('kpi-patrimonio').textContent = fmt(totalInvest);
-  document.getElementById('kpi-patrimonio-sub').textContent = `${investimentos.length} ativos`;
+  document.getElementById('kpi-patrimonio-sub').textContent = `${invDoMes.length} ativos`;
 }
 
 // ============================================================
@@ -1405,7 +1442,11 @@ function renderInvestments() {
     <div class="invest-kpi" style="--ik-color:${rendimentoMesCorrigido>=0?'var(--accent)':'var(--red)'}">
       <div class="invest-kpi-label">Rendimento do Mês</div>
       <div class="invest-kpi-val">${rendimentoMesCorrigido>=0?'+':''}${fmt(rendimentoMesCorrigido)}</div>
-      <div class="invest-kpi-sub">juros puros s/ aportes</div>
+      <div class="invest-kpi-sub">${(() => {
+        const base = invDoMes.reduce((s,i) => s + (i.valorAnterior !== null ? i.valorAnterior : 0), 0);
+        const pct = base > 0 ? ((rendimentoMesCorrigido / base) * 100).toFixed(2) : '0.00';
+        return `${rendimentoMesCorrigido>=0?'+':''}${pct}% sobre mês anterior`;
+      })()}</div>
     </div>
     <div class="invest-kpi" style="--ik-color:var(--amber)">
       <div class="invest-kpi-label">Distribuição</div>
